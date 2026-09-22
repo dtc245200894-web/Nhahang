@@ -1,0 +1,7 @@
+/* Stronger dashboard colors */
+.main{background:linear-gradient(rgba(255,255,255,.24),rgba(255,255,255,.24)),url('/static/login-background.jpg.jpg') center/cover fixed no-repeat!important}
+.dashboard-grid .table-panel{background:linear-gradient(135deg,#a9e0c4,#71be9d)!important}
+.dashboard-grid .popular-panel{background:linear-gradient(135deg,#ffe289,#f4b870)!important}
+.lower-grid .activity-panel{background:linear-gradient(135deg,#b1d2f4,#82aee0)!important}
+.lower-grid .ai-callout{background:linear-gradient(135deg,#f7d86d,#82cfa5)!important}
+.tables-panel{background:linear-gradient(135deg,#a9e0c4,#71be9d)!important}

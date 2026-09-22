@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Golden Lotus | Quản lý nhà hàng</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}?v=2026090902">
+  <link rel="stylesheet" href="{{ url_for('static', filename='background.css') }}?v=2026090902">
+  <link rel="stylesheet" href="{{ url_for('static', filename='light-overrides.css') }}?v=2026090911">
+  <link rel="stylesheet" href="{{ url_for('static', filename='color-overrides.css') }}?v=2026090914">
+  <link rel="stylesheet" href="{{ url_for('static', filename='workflow-overrides.css') }}?v=2026092203">
+    <link rel="stylesheet" href="{{ url_for('static', filename='workflow-overrides.css') }}?v=2026092217">
+   <link rel="stylesheet" href="{{ url_for('static', filename='order-overrides.css') }}?v=2026090918">
+  <link rel="stylesheet" href="{{ url_for('static', filename='scroll-overrides.css') }}?v=2026090919">
+  <link rel="stylesheet" href="{{ url_for('static', filename='order-layout-overrides.css') }}?v=2026090920">
+  <style>
+    .auth-screen{background:linear-gradient(90deg,rgba(32,37,38,.18),rgba(32,37,38,.04)),url("{{ url_for('static', filename='login-background.jpg.jpg') }}") center/cover no-repeat!important;background-color:#111!important}
+    #app,.app{background:#fff!important;color:#111!important}
+    #app .sidebar{background:#fff!important;color:#111!important}
+    #app .main{background:linear-gradient(rgba(255,255,255,.35),rgba(255,255,255,.35)),url("{{ url_for('static', filename='login-background.jpg.jpg') }}") center/cover fixed no-repeat!important;color:#111!important}
+    #app .main header{background:#fff!important;color:#111!important}
+    #app .main header h2,#app .main header .eyebrow,#app .main header .status,#app .main .panel h3,#app .main .panel p,#app .main .panel small{color:#111!important}
+    #app .nav-button{color:#222!important}
+    #app .nav-button.active,#app .nav-button:hover{color:#111!important}
+  </style>
+</head>
+<body>
+  <section class="auth-screen" id="authScreen">
+    <div class="auth-card">
+      <h1>Golden Lotus</h1>
+      <form id="loginForm">
+        <label>Tài khoản<input id="loginUsername" value="minh.anh" required></label>
+        <label>Mật khẩu<input id="loginPassword" type="password" value="123456" required></label>
+        <label>Vai trò<select id="loginRole"><option value="manager">Quản lý</option><option value="server">Nhân viên phục vụ</option><option value="cashier">Kế toán</option><option value="kitchen">Nhân viên bếp</option></select></label>
+        <p class="form-error" id="loginError"></p>
+        <button class="primary" type="submit">Đăng nhập</button>
+      </form>
+      <button class="link-button" id="showRegister">Tạo tài khoản mới</button>
+      <form class="register-form hidden" id="registerForm">
+      <h2 class="register-title">Đăng ký</h2>
+      <label>Họ và tên<input id="registerName" required></label>
+      <label>Tài khoản<input id="registerUsername" required></label>
+      <label>Số điện thoại<input id="registerPhone" type="tel" inputmode="numeric" pattern="[0-9 .+()-]{9,16}" placeholder="09xxxxxxxx" required></label>
+      <label>Mật khẩu<input id="registerPassword" type="password" minlength="6" required></label>
+      <label>Quyền hạn<select id="registerRole"><option value="server">Nhân viên phục vụ</option><option value="cashier">Kế toán</option><option value="kitchen">Nhân viên bếp</option><option value="manager">Quản lý</option></select></label>
+      <p class="form-error" id="registerError"></p><button class="primary" type="submit">Xác nhận đăng ký</button>
+      <button class="link-button" type="button" id="backLogin">Quay lại đăng nhập</button>
+      </form>
+    </div>
+  </section>
+
+  <div class="app hidden" id="app">
+    <aside class="sidebar"><button class="sidebar-toggle" id="sidebarToggle" type="button" aria-label="Thu gọn thanh điều hướng" title="Thu gọn thanh điều hướng">‹</button><div class="brand">Golden Lotus</div><nav id="navigation"></nav><div class="profile"><b id="profileName"></b><small id="profileRole"></small></div><button class="logout" id="logout">Đăng xuất</button></aside>
+    <main class="main"><header><div><span class="header-brand">Golden Lotus</span><p class="header-slogan">Tinh hoa ẩm thực, trọn vẹn trải nghiệm.</p></div><span class="status">● Hệ thống đang hoạt động</span></header><div class="shift-greeting" id="shiftGreeting"></div><section id="page"></section></main>
+  </div>
+  <div class="toast" id="toast"></div>
+  <script src="{{ url_for('static', filename='app.js') }}?v=2026092219"></script>
+</body>
+</html>
