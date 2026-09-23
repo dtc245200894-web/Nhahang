@@ -24,7 +24,7 @@ pip install -r requirements.txt
 python app.py
 ```
 
-Mở trình duyệt tại http://127.0.0.1:5000.
+Mở trình duyệt tại http://127.0.0.1:5000
 
 Tài khoản mẫu:
 
