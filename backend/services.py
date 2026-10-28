@@ -22,6 +22,17 @@ ROLE_VIEWS = {
     "kitchen": {"overview", "tables"},
 }
 
+VIETNAM_PHONE_PREFIXES = ("03", "05", "07", "08", "09")
+
+
+def normalize_phone(phone: str) -> str:
+    return "".join(character for character in str(phone or "") if character.isdigit())
+
+
+def is_valid_vietnam_phone(phone: str) -> bool:
+    normalized = normalize_phone(phone)
+    return len(normalized) == 10 and normalized.startswith(VIETNAM_PHONE_PREFIXES)
+
 
 class RestaurantService:
     def __init__(self, database: Database) -> None:
@@ -35,9 +46,9 @@ class RestaurantService:
         return user
 
     def register(self, name: str, username: str, password: str, role: str, phone: str) -> tuple[bool, str]:
-        phone = "".join(character for character in phone if character.isdigit())
-        if len(phone) < 9 or len(phone) > 11:
-            return False, "Số điện thoại cần có từ 9 đến 11 chữ số."
+        phone = normalize_phone(phone)
+        if not is_valid_vietnam_phone(phone):
+            return False, "Số điện thoại phải gồm đúng 10 chữ số và bắt đầu bằng đầu số Việt Nam hợp lệ."
         if self.db.one("SELECT id FROM users WHERE phone = ?", (phone,)):
             return False, "Số điện thoại này đã được đăng ký tài khoản khác."
         try:
@@ -92,6 +103,11 @@ class RestaurantService:
         table = self.db.one("SELECT * FROM restaurant_tables WHERE id = ?", (table_id,))
         if not table or table["status"] != "free":
             return False, "Bàn không còn trống."
+        if guests > table["seats"]:
+            return False, f"Số khách không được lớn hơn số chỗ của bàn ({table['seats']} chỗ)."
+        phone = normalize_phone(phone)
+        if not is_valid_vietnam_phone(phone):
+            return False, "Số điện thoại phải gồm đúng 10 chữ số và đầu số Việt Nam hợp lệ."
         reservation = f"{customer} | {phone} | {guests} khách | {date} {time} | {note}"
         self.db.connection.execute(
             "UPDATE restaurant_tables SET status = 'reserved', reservation = ? WHERE id = ?",

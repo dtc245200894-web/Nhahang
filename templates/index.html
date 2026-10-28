@@ -41,7 +41,7 @@
       <h2 class="register-title">Đăng ký</h2>
       <label>Họ và tên<input id="registerName" required></label>
       <label>Tài khoản<input id="registerUsername" required></label>
-      <label>Số điện thoại<input id="registerPhone" type="tel" inputmode="numeric" pattern="[0-9 .+()-]{9,16}" placeholder="09xxxxxxxx" required></label>
+      <label>Số điện thoại<input id="registerPhone" type="tel" inputmode="numeric" pattern="[0-9]{10}" maxlength="10" placeholder="09xxxxxxxx" required></label>
       <label>Mật khẩu<input id="registerPassword" type="password" minlength="6" required></label>
       <label>Quyền hạn<select id="registerRole"><option value="server">Nhân viên phục vụ</option><option value="cashier">Kế toán</option><option value="kitchen">Nhân viên bếp</option><option value="manager">Quản lý</option></select></label>
       <p class="form-error" id="registerError"></p><button class="primary" type="submit">Xác nhận đăng ký</button>
@@ -55,6 +55,6 @@
     <main class="main"><header><div><span class="header-brand">Golden Lotus</span><p class="header-slogan">Tinh hoa ẩm thực, trọn vẹn trải nghiệm.</p></div><span class="status">● Hệ thống đang hoạt động</span></header><div class="shift-greeting" id="shiftGreeting"></div><section id="page"></section></main>
   </div>
   <div class="toast" id="toast"></div>
-  <script src="{{ url_for('static', filename='app.js') }}?v=2026092219"></script>
+  <script src="{{ url_for('static', filename='app.js') }}?v=2026102802"></script>
 </body>
 </html>
