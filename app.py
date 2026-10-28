@@ -237,8 +237,20 @@ def delete_user(username: str):
 
 @app.post("/api/ai/recommend")
 def ai_recommend():
-    payload = request.get_json() or {}
-    return jsonify(service.recommend(int(payload.get("people", 1)), int(payload.get("budget", 0)), payload.get("taste", "")))
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return response(False, "Thông tin gợi ý món không hợp lệ."), 400
+    try:
+        people = int(payload.get("people", 1))
+        budget = int(payload.get("budget", 0))
+    except (TypeError, ValueError):
+        return response(False, "Số người và ngân sách cần là số nguyên."), 400
+    if people < 1 or budget < 0:
+        return response(False, "Số người phải từ 1 trở lên và ngân sách không được âm."), 400
+    taste = payload.get("taste", "")
+    if not isinstance(taste, str):
+        return response(False, "Sở thích cần là văn bản."), 400
+    return jsonify(service.recommend(people, budget, taste))
 
 
 @app.post("/api/ai/describe")

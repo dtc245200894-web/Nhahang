@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import datetime
+import re
+import unicodedata
 from typing import Any
 
 from .database import Database, now_iso, password_hash
@@ -295,9 +297,321 @@ class RestaurantService:
         self.db.connection.commit()
         return (cursor.rowcount == 1, "Đã xóa tài khoản." if cursor.rowcount else "Không thể xóa tài khoản quản lý.")
 
-    def recommend(self, people: int, budget: int, taste: str = "") -> list[dict[str, Any]]:
-        dishes = self.db.rows("SELECT * FROM menu WHERE available = 1 AND category != 'Đồ uống' AND price * ? <= ? ORDER BY sold DESC", (people, budget))
-        return dishes[:2]
+    def recommend(self, people: int, budget: int, taste: str = "") -> dict[str, Any]:
+        if people < 1:
+            return {"recommendations": [], "reason": "taste"}
+
+        dishes = self.db.rows(
+            "SELECT menu.*, COALESCE((SELECT group_concat(inventory.name, ' ') "
+            "FROM recipe_ingredients JOIN inventory ON inventory.id = recipe_ingredients.inventory_id "
+            "WHERE recipe_ingredients.menu_id = menu.id), '') AS ingredients "
+            "FROM menu WHERE available = 1 AND price > 0 ORDER BY sold DESC, price, name"
+        )
+        if not dishes:
+            return {"recommendations": [], "reason": "budget"}
+
+        def normalize(value: str) -> str:
+            value = value.lower().replace("đ", "d")
+            return "".join(
+                character
+                for character in unicodedata.normalize("NFD", value)
+                if unicodedata.category(character) != "Mn"
+            )
+
+        flavor_terms = {
+            "sweet": {"ngot"},
+            "spicy": {"cay", "ot", "sa te"},
+            "sour": {"chua", "chua cay"},
+            "salty": {"man", "muoi"},
+            "rich": {"beo", "ngay"},
+            "fresh": {"thanh", "mat", "thanh mat"},
+            "savory": {"dam da", "dam", "umami"},
+            "crispy": {"gion", "gion tan"},
+        }
+        flavor_cues = {
+            "sweet": ("ngọt", "mật ong", "sữa đặc", "chè", "xoài chín"),
+            "spicy": ("cay", "sa tế", "ớt", "tiêu"),
+            "sour": ("chua", "chanh", "me", "tắc"),
+            "salty": ("mặn", "muối", "nước mắm"),
+            "rich": ("béo", "bơ", "phô mai", "sữa đặc", "kem"),
+            "fresh": ("thanh mát", "thanh", "mát", "bạc hà", "sả"),
+            "savory": ("đậm đà", "thơm nồng", "bơ tỏi", "đậm"),
+            "crispy": ("giòn", "vàng giòn", "giòn tan"),
+        }
+
+        def contains_phrase(text: str, phrase: str) -> bool:
+            if normalize(phrase) != phrase or "đ" in phrase:
+                original_text = unicodedata.normalize("NFC", text.lower())
+                original_phrase = unicodedata.normalize("NFC", phrase.lower())
+                return re.search(
+                    rf"(?<!\w){re.escape(original_phrase)}(?!\w)",
+                    original_text,
+                ) is not None
+            normalized_text = normalize(text)
+            normalized_phrase = normalize(phrase)
+            return re.search(
+                rf"(?<![a-z0-9]){re.escape(normalized_phrase)}(?![a-z0-9])",
+                normalized_text,
+            ) is not None
+
+        requested_flavors = {
+            flavor
+            for flavor, terms in flavor_terms.items()
+            if any(contains_phrase(taste or "", term) for term in terms)
+        }
+
+        stop_words = {
+            "an", "cho", "co", "don", "hay", "la", "mon", "muon", "nhieu",
+            "nguoi", "thuc", "toi", "thich", "trong", "va", "vi", "voi", "qua",
+        }
+        negative_markers = {"bot", "han", "it", "k", "khong", "kieng", "ko", "ne", "tranh"}
+        raw_taste_tokens = re.findall(
+            r"[^\W_]+|[,;.!?]",
+            unicodedata.normalize("NFC", (taste or "").lower()),
+        )
+        taste_tokens = [(normalize(token), token) for token in raw_taste_tokens]
+        positive_preferences: set[tuple[str, str | None]] = set()
+        negative_preferences: set[tuple[str, str | None]] = set()
+        connectors = {"and", "hoac", "nhung", "or", "va"}
+        for index, (token, _) in enumerate(taste_tokens):
+            if token not in negative_markers:
+                continue
+            candidate_index = index + 1
+            while candidate_index < len(taste_tokens):
+                candidate, raw_candidate = taste_tokens[candidate_index]
+                if candidate in connectors or re.fullmatch(r"[,;.!?]", raw_taste_tokens[candidate_index]):
+                    break
+                if candidate in stop_words or (token == "han" and candidate == "che"):
+                    candidate_index += 1
+                    continue
+                if candidate in negative_markers:
+                    break
+                strict = normalize(raw_candidate) != raw_candidate or "đ" in raw_candidate
+                negative_preferences.add((candidate, raw_candidate if strict else None))
+                if candidate == "hai" and candidate_index + 1 < len(taste_tokens):
+                    next_candidate, next_raw = taste_tokens[candidate_index + 1]
+                    if next_candidate == "san":
+                        strict_next = normalize(next_raw) != next_raw or "đ" in next_raw
+                        negative_preferences.add((next_candidate, next_raw if strict_next else None))
+                break
+
+        def is_negative_preference(preference: tuple[str, str | None]) -> bool:
+            token, exact = preference
+            return any(
+                negative_token == token and (negative_exact is None or negative_exact == exact)
+                for negative_token, negative_exact in negative_preferences
+            )
+
+        if {"hai", "san"} <= {token for token, _ in negative_preferences}:
+            negative_preferences.update({
+                ("ca", "cá"),
+                ("tom", "tôm"),
+                ("muc", "mực"),
+                ("ngheu", "nghêu"),
+                ("so", "sò"),
+                ("cua", None),
+            })
+
+        positive_preferences.update(
+            (token, raw_token if normalize(raw_token) != raw_token or "đ" in raw_token else None)
+            for token, raw_token in taste_tokens
+            if token not in stop_words
+            and token not in connectors
+            and token not in negative_markers
+            and not re.fullmatch(r"[,;.!?]", raw_token)
+            and not is_negative_preference((
+                token,
+                raw_token if normalize(raw_token) != raw_token or "đ" in raw_token else None,
+            ))
+        )
+        negative_flavors = {
+            flavor
+            for flavor, terms in flavor_terms.items()
+            if any(
+                contains_phrase(preference[0], term)
+                for preference in negative_preferences
+                for term in terms
+            )
+        }
+        requested_flavors.difference_update(negative_flavors)
+        positive_preferences = {
+            preference
+            for preference in positive_preferences
+            if not any(
+                contains_phrase(preference[0], term)
+                for terms in flavor_terms.values()
+                for term in terms
+            )
+        }
+        if taste.strip() and not positive_preferences and not negative_preferences:
+            if not requested_flavors:
+                return {"recommendations": [], "reason": "taste"}
+
+        def dish_text(dish: dict[str, Any]) -> str:
+            return f"{dish['name']} {dish['description']}"
+
+        def preference_matches(
+            dish: dict[str, Any],
+            preference: tuple[str, str | None],
+            include_ingredients: bool = True,
+        ) -> bool:
+            dish_text = unicodedata.normalize(
+                "NFC",
+                (
+                    f"{dish['name']} {dish['description']} {dish['ingredients']}"
+                    if include_ingredients else f"{dish['name']} {dish['description']}"
+                ).lower(),
+            )
+            exact_tokens = set(re.findall(r"[^\W_]+", dish_text))
+            normalized_tokens = {normalize(token) for token in exact_tokens}
+            token, exact = preference
+            return exact in exact_tokens if exact else token in normalized_tokens
+
+        def preference_score(dish: dict[str, Any]) -> int:
+            positive_matches = sum(
+                preference_matches(
+                    dish,
+                    preference,
+                    include_ingredients=not requested_flavors,
+                )
+                for preference in positive_preferences
+            )
+            has_negative_match = any(
+                preference_matches(dish, preference) for preference in negative_preferences
+            )
+            return 5 * positive_matches - 8 * has_negative_match
+
+        def matched_flavors(dish: dict[str, Any]) -> set[str]:
+            text = dish_text(dish)
+            return {
+                flavor
+                for flavor, cues in flavor_cues.items()
+                if any(contains_phrase(text, cue) for cue in cues)
+            }
+
+        def has_negative_flavor_match(dish: dict[str, Any]) -> bool:
+            return bool(matched_flavors(dish) & negative_flavors)
+
+        def has_negative_match(dish: dict[str, Any]) -> bool:
+            return any(
+                preference_matches(dish, preference) for preference in negative_preferences
+            ) or has_negative_flavor_match(dish)
+
+        for dish in dishes:
+            dish["preference_score"] = preference_score(dish)
+
+        has_positive_preferences = bool(positive_preferences or requested_flavors)
+        if has_positive_preferences:
+            matched_dishes = [
+                dish for dish in dishes
+                if not has_negative_match(dish)
+                and (
+                    bool(matched_flavors(dish) & requested_flavors)
+                    if requested_flavors
+                    else dish["preference_score"] > 0
+                )
+            ]
+            if not matched_dishes:
+                return {"recommendations": [], "reason": "taste"}
+        else:
+            matched_dishes = [dish for dish in dishes if not has_negative_match(dish)]
+            if not matched_dishes:
+                return {"recommendations": [], "reason": "taste"}
+
+        mains = [dish for dish in dishes if dish["category"] == "Món chính"]
+        recommendations: list[dict[str, Any]] = []
+        remaining_budget = budget
+
+        if has_positive_preferences:
+            eligible = matched_dishes
+            categories = ("Món chính", "Khai vị", "Đồ uống")
+            for category in categories:
+                candidates = [
+                    dish for dish in eligible
+                    if dish["category"] == category
+                    and dish["price"] * (people if category == "Món chính" else 1) <= remaining_budget
+                ]
+                if not candidates:
+                    continue
+                dish = max(
+                    candidates,
+                    key=lambda item: (
+                        len(matched_flavors(item) & requested_flavors),
+                        item["preference_score"],
+                        item["sold"],
+                        -item["price"],
+                    ),
+                )
+                target_quantity = people if category in {"Món chính", "Đồ uống"} else (people + 1) // 2
+                quantity = min(target_quantity, remaining_budget // dish["price"])
+                if quantity < 1:
+                    continue
+                dish["quantity"] = quantity
+                dish["line_total"] = dish["price"] * quantity
+                recommendations.append(dish)
+                remaining_budget -= dish["line_total"]
+        else:
+            affordable_mains = [
+                dish for dish in matched_dishes
+                if dish["category"] == "Món chính"
+                if not has_negative_match(dish)
+                and (not requested_flavors or bool(matched_flavors(dish) & requested_flavors))
+                and dish["price"] * people <= budget
+            ]
+            if not affordable_mains:
+                return {"recommendations": [], "reason": "budget"}
+
+            main = max(
+                affordable_mains,
+                key=lambda dish: (
+                    dish["preference_score"],
+                    dish["sold"],
+                    -dish["price"],
+                ),
+            )
+            main["quantity"] = people
+            main["line_total"] = main["price"] * people
+            recommendations = [main]
+            remaining_budget = budget - main["line_total"]
+
+            extras_by_category = {
+                category: [dish for dish in dishes if dish["category"] == category]
+                for category in ("Khai vị", "Đồ uống")
+            }
+            extras = []
+            for category, candidates in extras_by_category.items():
+                eligible = [
+                    dish for dish in candidates
+                    if not has_negative_match(dish)
+                    and (not requested_flavors or bool(matched_flavors(dish) & requested_flavors))
+                ]
+                if eligible:
+                    extras.append(max(
+                        eligible,
+                        key=lambda dish: (
+                            dish["preference_score"],
+                            dish["sold"],
+                            -dish["price"],
+                        ),
+                    ))
+
+            for dish in extras:
+                target_quantity = (people + 1) // 2 if dish["category"] == "Khai vị" else people
+                quantity = min(target_quantity, remaining_budget // dish["price"])
+                if quantity < 1:
+                    continue
+                dish["quantity"] = quantity
+                dish["line_total"] = dish["price"] * quantity
+                recommendations.append(dish)
+                remaining_budget -= dish["line_total"]
+
+        for dish in recommendations:
+            dish.pop("ingredients", None)
+            dish.pop("preference_score", None)
+        return {
+            "recommendations": recommendations,
+            "reason": None if recommendations else "budget",
+        }
 
     def describe_dish(self, menu_id: int) -> str:
         dish = self.db.one("SELECT * FROM menu WHERE id = ?", (menu_id,))
