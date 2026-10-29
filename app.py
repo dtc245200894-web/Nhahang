@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from flask import Flask, jsonify, render_template, request, session
 
+from backend.ai_provider import AIProviderError
 from backend.database import Database
 from backend.services import ROLE_NAMES, ROLE_VIEWS, RestaurantService
 
@@ -26,6 +27,8 @@ def not_found(error):
 def internal_error(error):
     if request.path.startswith("/api/"):
         database.connection.rollback()
+        if request.path.startswith("/api/ai/"):
+            return response(False, "Trợ lý AI gặp lỗi nội bộ. Hãy xem terminal Flask để biết chi tiết."), 500
         return response(False, "Máy chủ gặp lỗi khi xử lý yêu cầu."), 500
     return error
 
@@ -256,6 +259,9 @@ def delete_user(username: str):
 
 @app.post("/api/ai/recommend")
 def ai_recommend():
+    access_error = require_role("manager", "server")
+    if access_error:
+        return access_error
     payload = request.get_json(silent=True)
     if not isinstance(payload, dict):
         return response(False, "Thông tin gợi ý món không hợp lệ."), 400
@@ -264,17 +270,79 @@ def ai_recommend():
         budget = int(payload.get("budget", 0))
     except (TypeError, ValueError):
         return response(False, "Số người và ngân sách cần là số nguyên."), 400
-    if people < 1 or budget < 0:
-        return response(False, "Số người phải từ 1 trở lên và ngân sách không được âm."), 400
+    if people < 1 or people > 30 or budget < 0 or budget > 100_000_000:
+        return response(False, "Số người phải từ 1 đến 30 và ngân sách từ 0 đến 100.000.000đ."), 400
     taste = payload.get("taste", "")
-    if not isinstance(taste, str):
-        return response(False, "Sở thích cần là văn bản."), 400
-    return jsonify(service.recommend(people, budget, taste))
+    if not isinstance(taste, str) or len(taste) > 300:
+        return response(False, "Sở thích cần là văn bản không quá 300 ký tự."), 400
+    try:
+        return jsonify(service.recommend_with_ai(people, budget, taste))
+    except AIProviderError as error:
+        app.logger.warning("AI recommendation unavailable: %s", error)
+        return response(False, str(error)), 503
+    except ValueError as error:
+        app.logger.error("AI recommendation returned invalid menu data: %s", error)
+        return response(False, "AI trả về gợi ý không hợp lệ. Vui lòng thử lại."), 502
 
 
 @app.post("/api/ai/describe")
 def ai_describe():
-    return response(True, service.describe_dish(int((request.get_json() or {}).get("menu_id", 0))))
+    access_error = require_role("manager", "server")
+    if access_error:
+        return access_error
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return response(False, "Thông tin món ăn không hợp lệ."), 400
+    try:
+        menu_id = int(payload.get("menu_id", 0))
+    except (TypeError, ValueError):
+        return response(False, "Mã món ăn cần là số nguyên."), 400
+    if menu_id < 1:
+        return response(False, "Mã món ăn không hợp lệ."), 400
+    try:
+        description = service.describe_dish(menu_id)
+    except AIProviderError as error:
+        app.logger.warning("AI dish description unavailable: %s", error)
+        return response(False, str(error)), 503
+    if description == "Không tìm thấy món ăn.":
+        return response(False, description), 404
+    return response(True, description)
+
+
+@app.post("/api/ai/chat")
+def ai_chat():
+    access_error = require_role("manager", "server")
+    if access_error:
+        return access_error
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return response(False, "Nội dung trò chuyện không hợp lệ."), 400
+    message = payload.get("message")
+    history = payload.get("history", [])
+    if not isinstance(message, str) or not message.strip() or len(message) > 1200:
+        return response(False, "Câu hỏi cần có từ 1 đến 1.200 ký tự."), 400
+    if not isinstance(history, list) or len(history) > 10:
+        return response(False, "Lịch sử hội thoại không hợp lệ."), 400
+    validated_history: list[dict[str, str]] = []
+    for entry in history:
+        if (
+            not isinstance(entry, dict)
+            or entry.get("role") not in {"user", "assistant"}
+            or not isinstance(entry.get("content"), str)
+            or not entry["content"].strip()
+            or len(entry["content"]) > 1200
+        ):
+            return response(False, "Lịch sử hội thoại không hợp lệ."), 400
+        validated_history.append({
+            "role": entry["role"],
+            "content": entry["content"],
+        })
+    try:
+        answer = service.chat_with_ai(message.strip(), validated_history)
+    except AIProviderError as error:
+        app.logger.warning("AI chat unavailable: %s", error)
+        return response(False, str(error)), 503
+    return response(True, answer)
 
 
 @app.get("/api/session")

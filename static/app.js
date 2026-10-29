@@ -703,13 +703,76 @@ async function renderReports() {
 async function renderAI() {
   const dishes = await api('/api/menu');
   let selectedDish = dishes[0];
-  $('#page').innerHTML = `<div class="ai-heading"><div><p class="eyebrow">BẾP NHÀ INTELLIGENCE</p><h1>Trợ lý AI <span>✳</span></h1><p>Một lớp tư duy thêm cho mọi quyết định trong ca.</p></div><strong>● AI mô phỏng đang sẵn sàng</strong></div><div class="ai-layout"><section class="ai-recommend-panel"><div class="ai-symbol">✦</div><p class="eyebrow">GỢI Ý MÓN</p><h2>Khách đang muốn ăn gì?</h2><p>Nhập nhu cầu để nhận combo phù hợp từ các món đang bán.</p><div class="form-grid"><label>Số người<input id="aiPeople" type="number" value="3" min="1"></label><label>Ngân sách (đ)<input id="aiBudget" type="number" value="250000" min="0"></label></div><label>Sở thích<textarea id="aiTaste">Ít cay, thích món nướng</textarea></label><button class="primary" id="recommendButton">Gợi ý món <span>✳</span></button><div id="recommendResult"></div></section><section class="ai-description-panel"><div class="ai-symbol ai-symbol-gold">Aa</div><p class="eyebrow">SINH MÔ TẢ MÓN</p><h2>Làm món ăn nổi bật hơn.</h2><p>Mô phỏng mô tả ngắn dựa trên dữ liệu thực đơn, không tự bịa thành phần.</p><label>Chọn món</label><div class="ai-dish-picker">${dishes.map(dish => `<button type="button" class="ai-dish-choice ${dish.id === selectedDish?.id ? 'selected' : ''}" data-ai-dish="${dish.id}"><img src="${dishImages[dish.name] || ''}" alt="${dish.name}"><span>${dish.name}</span></button>`).join('')}</div><div class="ai-selected-dish"><img src="${dishImages[selectedDish?.name] || ''}" alt="${selectedDish?.name || ''}"><div><b>${selectedDish?.name || 'Chưa chọn món'}</b><small>${selectedDish ? `${money(selectedDish.price)} · ${selectedDish.category}` : ''}</small></div></div><button class="ai-description-button" id="descriptionButton">Sinh mô tả <span>→</span></button><p class="ai-description-result" id="descriptionResult"></p></section></div>`;
-  $('#aiBudget').parentElement.firstChild.textContent = 'Tổng ngân sách (đ)';
-  $('#aiTaste').parentElement.firstChild.textContent = 'Sở thích / vị mong muốn';
-  $('#aiTaste').placeholder = 'Ví dụ: ngọt, cay, chua, béo, thanh mát';
-  $('.ai-recommend-panel > p:not(.eyebrow)').textContent = 'Ngân sách áp dụng cho cả nhóm; gợi ý đủ món chính theo số người.';
+  $('#page').innerHTML = `<div class="ai-heading"><div><p class="eyebrow">BẾP NHÀ INTELLIGENCE</p><h1>Trợ lý AI <span>✳</span></h1><p>Một lớp tư duy thêm cho mọi quyết định trong ca.</p></div><strong>● Gemini API · Free tier</strong></div><div class="ai-layout"><section class="ai-recommend-panel"><div class="ai-symbol">✦</div><p class="eyebrow">GỢI Ý MÓN</p><h2>Khách đang muốn ăn gì?</h2><p>Nhập nhu cầu để nhận combo phù hợp từ các món đang bán.</p><div class="form-grid"><label>Số người<input id="aiPeople" type="number" value="3" min="1"></label><label>Ngân sách (đ)<input id="aiBudget" type="number" value="250000" min="0"></label></div><label>Sở thích<textarea id="aiTaste">Ít cay, thích món nướng</textarea></label><button class="primary" id="recommendButton">Gợi ý món <span>✳</span></button><div id="recommendResult"></div></section><section class="ai-description-panel"><div class="ai-symbol ai-symbol-gold">Aa</div><p class="eyebrow">SINH MÔ TẢ MÓN</p><h2>Làm món ăn nổi bật hơn.</h2><p>AI tạo mô tả ngắn dựa trên dữ liệu thực đơn, không tự bịa thành phần.</p><label>Chọn món</label><div class="ai-dish-picker">${dishes.map(dish => `<button type="button" class="ai-dish-choice ${dish.id === selectedDish?.id ? 'selected' : ''}" data-ai-dish="${dish.id}"><img src="${dishImages[dish.name] || ''}" alt="${dish.name}"><span>${dish.name}</span></button>`).join('')}</div><div class="ai-selected-dish"><img src="${dishImages[selectedDish?.name] || ''}" alt="${selectedDish?.name || ''}"><div><b>${selectedDish?.name || 'Chưa chọn món'}</b><small>${selectedDish ? `${money(selectedDish.price)} · ${selectedDish.category}` : ''}</small></div></div><button class="ai-description-button" id="descriptionButton">Sinh mô tả <span>→</span></button><p class="ai-description-result" id="descriptionResult"></p></section></div>`;
+  $('.ai-heading strong').textContent = '● Ollama · Chạy cục bộ';
+  const aiLayout = $('.ai-layout');
+  $('.ai-recommend-panel').remove();
+  const chatHistory = [];
+  $('#page').insertAdjacentHTML('beforeend', `
+    <section class="ai-chat-panel">
+      <div class="ai-chat-heading">
+        <div><p class="eyebrow">HỎI ĐÁP TỰ DO</p><h2>Trò chuyện với trợ lý AI</h2>
+        <p>Hỏi về thực đơn hoặc chủ đề khác. Trợ lý không truy cập dữ liệu bàn, đơn hàng hay doanh thu trực tiếp.</p></div>
+      </div>
+      <div class="ai-chat-messages" aria-live="polite">
+        <p class="ai-chat-empty">Xin chào! Bạn có thể hỏi mình bất cứ điều gì.</p>
+      </div>
+      <form class="ai-chat-form">
+        <textarea name="message" rows="2" maxlength="1200" placeholder="Ví dụ: Có cách nào giúp nhân viên xử lý giờ cao điểm hiệu quả hơn?" required></textarea>
+        <button class="primary" type="submit">Gửi câu hỏi</button>
+      </form>
+    </section>`);
+  aiLayout.prepend($('.ai-chat-panel'));
+  const chatMessages = $('.ai-chat-messages');
+  const chatForm = $('.ai-chat-form');
+  const chatInput = chatForm.elements.message;
+  chatInput.addEventListener('keydown', event => {
+    if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return;
+    event.preventDefault();
+    if (!chatForm.querySelector('button[type="submit"]').disabled) chatForm.requestSubmit();
+  });
+  const renderChatMessages = () => {
+    chatMessages.replaceChildren();
+    if (!chatHistory.length) {
+      const empty = document.createElement('p');
+      empty.className = 'ai-chat-empty';
+      empty.textContent = 'Xin chào! Bạn có thể hỏi mình bất cứ điều gì.';
+      chatMessages.append(empty);
+      return;
+    }
+    chatHistory.forEach(entry => {
+      const bubble = document.createElement('p');
+      bubble.className = `ai-chat-message ${entry.role}`;
+      bubble.textContent = entry.content;
+      chatMessages.append(bubble);
+    });
+  };
+  chatForm.onsubmit = async event => {
+    event.preventDefault();
+    const textarea = chatForm.elements.message;
+    const message = textarea.value.trim();
+    if (!message) return;
+    const submit = chatForm.querySelector('button[type="submit"]');
+    submit.disabled = true;
+    submit.textContent = 'Đang trả lời...';
+    const history = chatHistory.slice(-10);
+    try {
+      const result = await api('/api/ai/chat', {
+        method: 'POST',
+        body: JSON.stringify({ message, history })
+      });
+      chatHistory.push({ role: 'user', content: message }, { role: 'assistant', content: result.message });
+      textarea.value = '';
+      renderChatMessages();
+      chatMessages.scrollTop = chatMessages.scrollHeight;
+    } catch (error) {
+      toast(error.message);
+    } finally {
+      submit.disabled = false;
+      submit.textContent = 'Gửi câu hỏi';
+    }
+  };
   document.querySelectorAll('[data-ai-dish]').forEach(button => button.onclick = () => { selectedDish = dishes.find(dish => dish.id === Number(button.dataset.aiDish)); document.querySelectorAll('[data-ai-dish]').forEach(item => item.classList.toggle('selected', item === button)); $('.ai-selected-dish').innerHTML = `<img src="${dishImages[selectedDish.name] || ''}" alt="${selectedDish.name}"><div><b>${selectedDish.name}</b><small>${money(selectedDish.price)} · ${selectedDish.category}</small></div>`; $('#descriptionResult').textContent = ''; });
-  $('#recommendButton').onclick = async () => { try { const budget = Number($('#aiBudget').value); const result = await api('/api/ai/recommend', { method: 'POST', body: JSON.stringify({ people: $('#aiPeople').value, budget: $('#aiBudget').value, taste: $('#aiTaste').value }) }); const recommendations = result.recommendations || []; const total = recommendations.reduce((sum, dish) => sum + dish.line_total, 0); const emptyMessage = result.reason === 'budget' ? 'Không tìm thấy món phù hợp ngân sách.' : 'Không tìm thấy món phù hợp sở thích.'; $('#recommendResult').innerHTML = recommendations.length ? `<div class="ai-result"><b>Gợi ý phù hợp · ${money(total)} / ${money(budget)}</b><span>${recommendations.map(dish => `${dish.quantity} × ${dish.name} (${money(dish.line_total)})`).join(' · ')}</span></div>` : `<div class="ai-result">${emptyMessage}</div>`; } catch (error) { toast(error.message); } };
   $('#descriptionButton').onclick = async () => { if (!selectedDish) return; try { const result = await api('/api/ai/describe', { method: 'POST', body: JSON.stringify({ menu_id: selectedDish.id }) }); $('#descriptionResult').textContent = result.message; } catch (error) { toast(error.message); } };
 }
 async function renderAccountApproval() {

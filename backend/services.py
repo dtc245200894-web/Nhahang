@@ -5,6 +5,9 @@ import re
 import unicodedata
 from typing import Any
 
+from .ai_provider import describe_dish as ai_describe_dish
+from .ai_provider import chat as ai_chat
+from .ai_provider import recommend_dishes as ai_recommend_dishes
 from .database import Database, now_iso, password_hash
 
 
@@ -347,6 +350,55 @@ class RestaurantService:
         self.db.connection.commit()
         return (cursor.rowcount == 1, "Đã xóa tài khoản." if cursor.rowcount else "Không thể xóa tài khoản quản lý.")
 
+    def recommend_with_ai(self, people: int, budget: int, taste: str = "") -> dict[str, Any]:
+        dishes = self.db.rows(
+            "SELECT menu.id, menu.name, menu.category, menu.price, menu.description, "
+            "COALESCE((SELECT group_concat(inventory.name, ', ') "
+            "FROM recipe_ingredients JOIN inventory ON inventory.id = recipe_ingredients.inventory_id "
+            "WHERE recipe_ingredients.menu_id = menu.id), '') AS ingredients "
+            "FROM menu WHERE available = 1 AND price > 0 ORDER BY sold DESC, price, name"
+        )
+        if not dishes:
+            return {"recommendations": [], "reason": "budget"}
+
+        result = ai_recommend_dishes(people, budget, taste, dishes)
+        menu_by_id = {dish["id"]: dish for dish in dishes}
+        quantities: dict[int, int] = {}
+        max_quantity = people * 2
+        for item in result.items:
+            if item.menu_id not in menu_by_id:
+                raise ValueError("AI trả về món không có trong thực đơn.")
+            if item.quantity < 1 or item.quantity > max_quantity:
+                raise ValueError("AI trả về số lượng món không hợp lệ.")
+            quantities[item.menu_id] = quantities.get(item.menu_id, 0) + item.quantity
+        if any(quantity > max_quantity for quantity in quantities.values()):
+            raise ValueError("AI trả về số lượng món không hợp lệ.")
+
+        recommendations: list[dict[str, Any]] = []
+        total = 0
+        for menu_id, quantity in quantities.items():
+            dish = menu_by_id[menu_id]
+            line_total = dish["price"] * quantity
+            if total + line_total > budget:
+                return {"recommendations": [], "reason": "budget"}
+            recommendations.append({
+                "name": dish["name"],
+                "quantity": quantity,
+                "line_total": line_total,
+            })
+            total += line_total
+        return {
+            "recommendations": recommendations,
+            "reason": None if recommendations else "budget",
+        }
+
+    def chat_with_ai(self, message: str, history: list[dict[str, str]]) -> str:
+        menu = self.db.rows(
+            "SELECT id, name, category, price, description FROM menu "
+            "WHERE available = 1 ORDER BY category, name"
+        )
+        return ai_chat(message, history, menu)
+
     def recommend(self, people: int, budget: int, taste: str = "") -> dict[str, Any]:
         if people < 1:
             return {"recommendations": [], "reason": "taste"}
@@ -665,7 +717,15 @@ class RestaurantService:
 
     def describe_dish(self, menu_id: int) -> str:
         dish = self.db.one("SELECT * FROM menu WHERE id = ?", (menu_id,))
-        return f"{dish['description']} Một lựa chọn nổi bật của Golden Lotus." if dish else "Không tìm thấy món ăn."
+        if not dish:
+            return "Không tìm thấy món ăn."
+        ingredients = self.db.rows(
+            "SELECT inventory.name FROM recipe_ingredients "
+            "JOIN inventory ON inventory.id = recipe_ingredients.inventory_id "
+            "WHERE recipe_ingredients.menu_id = ? ORDER BY inventory.name",
+            (menu_id,),
+        )
+        return ai_describe_dish(dish, [ingredient["name"] for ingredient in ingredients])
 
     @staticmethod
     def money(value: int | float) -> str:
