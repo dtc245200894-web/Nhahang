@@ -271,6 +271,40 @@ class RestaurantService:
         self.db.connection.commit()
         return (cursor.rowcount == 1, "Đã hủy đặt bàn." if cursor.rowcount else "Bàn không ở trạng thái đã đặt.")
 
+    def update_reservation(self, table_id: int, new_table_id: int, customer: str, phone: str, guests: int, date: str, time: str, note: str) -> tuple[bool, str]:
+        current_table = self.db.one("SELECT * FROM restaurant_tables WHERE id = ?", (table_id,))
+        if not current_table or current_table["status"] != "reserved":
+            return False, "Bàn không ở trạng thái đã đặt."
+        target_table = self.db.one("SELECT * FROM restaurant_tables WHERE id = ?", (new_table_id,))
+        if not target_table or (new_table_id != table_id and target_table["status"] != "free"):
+            return False, "Bàn mới không còn trống."
+        if not customer.strip() or guests < 1:
+            return False, "Thông tin khách đặt bàn không hợp lệ."
+        if guests > target_table["seats"]:
+            return False, f"Số khách không được lớn hơn số chỗ của bàn ({target_table['seats']} chỗ)."
+        phone = normalize_phone(phone)
+        if not is_valid_vietnam_phone(phone):
+            return False, "Số điện thoại phải gồm đúng 10 chữ số và đầu số Việt Nam hợp lệ."
+        reservation = f"{customer.strip()} | {phone} | {guests} khách | {date} {time} | {note.strip()}"
+        connection = self.db.connection
+        connection.execute("BEGIN IMMEDIATE")
+        released = connection.execute(
+            "UPDATE restaurant_tables SET status = 'free', reservation = NULL WHERE id = ? AND status = 'reserved'",
+            (table_id,),
+        )
+        if released.rowcount != 1:
+            connection.rollback()
+            return False, "Bàn không ở trạng thái đã đặt."
+        reserved = connection.execute(
+            "UPDATE restaurant_tables SET status = 'reserved', reservation = ? WHERE id = ? AND status = 'free'",
+            (reservation, new_table_id),
+        )
+        if reserved.rowcount != 1:
+            connection.rollback()
+            return False, "Bàn mới không còn trống."
+        connection.commit()
+        return True, f"Đã cập nhật đặt bàn cho {customer.strip()}."
+
     def add_menu(self, name: str, category: str, price: int, description: str) -> tuple[bool, str]:
         if not name.strip() or price < 0:
             return False, "Tên món và giá bán không hợp lệ."

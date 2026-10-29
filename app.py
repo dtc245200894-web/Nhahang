@@ -197,6 +197,25 @@ def cancel_reservation(table_id: int):
     return response(ok, message), 200 if ok else 400
 
 
+@app.patch("/api/tables/<int:table_id>/reservation")
+def update_reservation(table_id: int):
+    access_error = require_role("manager")
+    if access_error:
+        return access_error
+    payload = request.get_json() or {}
+    ok, message = service.update_reservation(
+        table_id,
+        int(payload.get("table_id", table_id)),
+        payload.get("customer", ""),
+        payload.get("phone", ""),
+        int(payload.get("guests", 1)),
+        payload.get("date", ""),
+        payload.get("time", ""),
+        payload.get("note", ""),
+    )
+    return response(ok, message), 200 if ok else 400
+
+
 @app.post("/api/menu")
 def add_menu():
     payload = request.get_json() or {}

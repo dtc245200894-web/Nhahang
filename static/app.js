@@ -3,6 +3,7 @@ let renderInProgress = false;
 let renderRequested = false;
 const $ = (selector) => document.querySelector(selector);
 const money = (value) => `${Number(value || 0).toLocaleString('vi-VN')}đ`;
+const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]);
 const dishImages = {
   'Cơm gà sốt tiêu': 'https://images.unsplash.com/photo-1515003197210-e0cd71810b5f?w=600&q=85',
   'Cá hồi áp chảo': 'https://images.unsplash.com/photo-1467003909585-2f8a72700288?w=600&q=85',
@@ -82,16 +83,234 @@ function validatePhoneField(input, message = 'Số điện thoại phải gồm 
   input.setCustomValidity('');
   return true;
 }
-function askCancelReservation(tableId) {
-  document.querySelector('.confirm-modal')?.remove();
-  const modal = document.createElement('div');
-  modal.className = 'confirm-modal';
-  modal.innerHTML = '<div class="confirm-card"><div class="confirm-icon">?</div><h3>Hủy đặt bàn?</h3><p>Bạn có chắc muốn xóa lịch đặt bàn này không?</p><div class="confirm-actions"><button type="button" class="confirm-cancel">Giữ lại</button><button type="button" class="confirm-delete">Xác nhận xóa</button></div></div>';
-  document.body.append(modal);
-  const close = () => modal.remove();
-  modal.querySelector('.confirm-cancel').onclick = close;
-  modal.querySelector('.confirm-delete').onclick = async () => { close(); await updateTable(tableId, 'cancel-reservation', 'Đã hủy đặt bàn.'); };
-  modal.onclick = event => { if (event.target === modal) close(); };
+async function askCancelReservation(tableId) {
+  try {
+    const table = await api(`/api/tables/${tableId}`);
+    if (table.status !== 'reserved' || !table.reservation) {
+      toast('Không tìm thấy thông tin đặt bàn.');
+      return;
+    }
+    const [customer = '', phone = '', guestLabel = '', arrival = '', ...noteParts] = table.reservation.split(' | ');
+    const [date = '', time = ''] = arrival.split(/\s+/, 2);
+    document.querySelector('.reservation-edit-modal')?.remove();
+    const modal = document.createElement('div');
+    modal.className = 'reservation-edit-modal';
+    modal.innerHTML = `
+      <section class="reservation-edit-card reservation-summary-card" role="dialog" aria-modal="true" aria-labelledby="reservationSummaryTitle">
+        <button class="reservation-edit-close" type="button" aria-label="Đóng">×</button>
+        <p class="eyebrow">THÔNG TIN ĐẶT BÀN</p>
+        <h2 id="reservationSummaryTitle"></h2>
+        <div class="reservation-summary-grid">
+          <div><small>Khách đặt</small><strong data-reservation-customer></strong></div>
+          <div><small>Số điện thoại</small><strong data-reservation-phone></strong></div>
+          <div><small>Số khách</small><strong data-reservation-guests></strong></div>
+          <div><small>Thời gian</small><strong data-reservation-arrival></strong></div>
+          <div class="reservation-summary-note"><small>Ghi chú</small><strong data-reservation-note></strong></div>
+        </div>
+        <div class="reservation-summary-actions">
+          ${state.user?.role === 'manager' ? '<button type="button" class="reservation-edit-button">Chỉnh sửa</button><button type="button" class="reservation-cancel-button">Hủy đặt bàn</button>' : ''}
+          <button type="button" class="reservation-serve-button">Phục vụ</button>
+        </div>
+      </section>`;
+    modal.querySelector('#reservationSummaryTitle').textContent = `${table.name} · ${table.seats} chỗ`;
+    modal.querySelector('[data-reservation-customer]').textContent = customer || 'Chưa có thông tin';
+    modal.querySelector('[data-reservation-phone]').textContent = phone || 'Chưa có thông tin';
+    modal.querySelector('[data-reservation-guests]').textContent = guestLabel || 'Chưa có thông tin';
+    modal.querySelector('[data-reservation-arrival]').textContent = [date, time].filter(Boolean).join(' · ') || 'Chưa có thông tin';
+    modal.querySelector('[data-reservation-note]').textContent = noteParts.join(' | ') || 'Không có ghi chú';
+    document.body.append(modal);
+    const close = () => modal.remove();
+    modal.querySelector('.reservation-edit-close').onclick = close;
+    modal.querySelector('.reservation-edit-button')?.addEventListener('click', () => {
+      close();
+      openReservationEditor(tableId);
+    });
+    modal.querySelector('.reservation-cancel-button')?.addEventListener('click', async event => {
+      const button = event.currentTarget;
+      button.disabled = true;
+      try {
+        const result = await api(`/api/tables/${tableId}/cancel-reservation`, { method: 'POST' });
+        close();
+        toast(result.message);
+        renderPage();
+      } catch (error) {
+        button.disabled = false;
+        toast(error.message);
+      }
+    });
+    modal.querySelector('.reservation-serve-button').onclick = () => {
+      close();
+      openServiceOrderModal(tableId);
+    };
+    modal.onclick = event => { if (event.target === modal) close(); };
+  } catch (error) {
+    toast(error.message);
+  }
+}
+async function openReservationEditor(tableId) {
+  try {
+    const [table, tables] = await Promise.all([
+      api(`/api/tables/${tableId}`),
+      api('/api/tables')
+    ]);
+    if (table.status !== 'reserved' || !table.reservation) {
+      toast('Không tìm thấy thông tin đặt bàn để chỉnh sửa.');
+      return;
+    }
+    const [customer = '', phone = '', guestLabel = '', arrival = '', ...noteParts] = table.reservation.split(' | ');
+    const guests = guestLabel.match(/^(\d+)/)?.[1] || '1';
+    const [date = '', time = ''] = arrival.split(/\s+/, 2);
+    const modal = document.createElement('div');
+    modal.className = 'reservation-edit-modal';
+    modal.innerHTML = `
+      <section class="reservation-edit-card" role="dialog" aria-modal="true" aria-labelledby="reservationEditTitle">
+        <button class="reservation-edit-close" type="button" aria-label="Đóng">×</button>
+        <p class="eyebrow">SƠ ĐỒ BÀN · ${table.name}</p>
+        <h2 id="reservationEditTitle">Đặt bàn</h2>
+        <p class="reservation-edit-description">Chỉnh sửa thông tin đặt bàn hiện tại.</p>
+        <form id="reservationEditForm" class="form-grid">
+          <label>Tên khách<input name="customer" required></label>
+          <label>Số điện thoại<input name="phone" required></label>
+          <label>Số khách<input name="guests" type="number" min="1" value="2" required></label>
+          <label>Ngày đến<input name="date" type="date" required></label>
+          <label>Giờ đến<input name="time" type="time" required></label>
+          <label>Bàn<select name="table_id" required></select></label>
+          <label class="reservation-edit-note">Ghi chú<input name="note"></label>
+          <div class="form-actions reservation-edit-actions">
+            <button class="reservation-edit-cancel" type="button">Đóng</button>
+            <button class="primary" type="submit">Lưu thay đổi</button>
+          </div>
+        </form>
+      </section>`;
+    document.body.append(modal);
+    const form = modal.querySelector('#reservationEditForm');
+    const tableSelect = form.elements.table_id;
+    tables.filter(item => item.status === 'free' || item.id === Number(tableId)).forEach(item => {
+      const option = document.createElement('option');
+      option.value = String(item.id);
+      option.dataset.seats = String(item.seats);
+      option.textContent = `${item.name} · ${item.seats} chỗ`;
+      tableSelect.append(option);
+    });
+    form.elements.customer.value = customer;
+    form.elements.phone.value = phone;
+    form.elements.guests.value = guests;
+    form.elements.date.value = date;
+    form.elements.time.value = time;
+    form.elements.table_id.value = String(tableId);
+    form.elements.note.value = noteParts.join(' | ');
+    const close = () => modal.remove();
+    modal.querySelector('.reservation-edit-close').onclick = close;
+    modal.querySelector('.reservation-edit-cancel').onclick = close;
+    modal.onclick = event => { if (event.target === modal) close(); };
+    bindReservationForm(form, async data => {
+      const result = await api(`/api/tables/${tableId}/reservation`, { method: 'PATCH', body: JSON.stringify(data) });
+      toast(result.message);
+      close();
+      renderPage();
+    });
+  } catch (error) {
+    toast(error.message);
+  }
+}
+async function openServiceOrderModal(tableId) {
+  try {
+    const [table, menu] = await Promise.all([
+      api(`/api/tables/${tableId}`),
+      api('/api/menu')
+    ]);
+    if (!['free', 'reserved'].includes(table.status)) {
+      toast('Bàn này không thể nhận đơn gọi món.');
+      return;
+    }
+    const dishes = menu.filter(dish => dish.available);
+    const modal = document.createElement('div');
+    modal.className = 'reservation-edit-modal service-order-modal';
+    modal.innerHTML = `
+      <section class="service-order-card" role="dialog" aria-modal="true" aria-labelledby="serviceOrderTitle">
+        <button class="reservation-edit-close" type="button" aria-label="Đóng">×</button>
+        <p class="eyebrow">SƠ ĐỒ BÀN · ${table.name}</p>
+        <h2 id="serviceOrderTitle">Đơn gọi món</h2>
+        <div class="service-order-layout">
+          <section class="service-menu-panel">
+            <input class="service-menu-search" type="search" placeholder="Tìm món ăn...">
+            <div class="service-menu-grid"></div>
+          </section>
+          <aside class="service-cart">
+            <p class="eyebrow">ĐƠN MỚI</p>
+            <h3>${table.name}</h3>
+            <div class="service-cart-rows"></div>
+            <button type="button" class="primary service-submit">Xác nhận đơn</button>
+          </aside>
+        </div>
+      </section>`;
+    document.body.append(modal);
+    const close = () => modal.remove();
+    modal.querySelector('.reservation-edit-close').onclick = close;
+    modal.onclick = event => { if (event.target === modal) close(); };
+    const cart = {};
+    const menuGrid = modal.querySelector('.service-menu-grid');
+    const cartRows = modal.querySelector('.service-cart-rows');
+    const renderMenu = () => {
+      const search = modal.querySelector('.service-menu-search').value.trim().toLocaleLowerCase('vi');
+      const filtered = dishes.filter(dish => dish.name.toLocaleLowerCase('vi').includes(search));
+      menuGrid.innerHTML = filtered.map(dish => `
+        <article class="service-menu-item">
+          <img src="${dishImages[dish.name] || ''}" alt="${escapeHtml(dish.name)}">
+          <div><strong>${escapeHtml(dish.name)}</strong><small>${money(dish.price)}</small></div>
+          <button type="button" data-service-add="${dish.id}" aria-label="Thêm ${escapeHtml(dish.name)}">+</button>
+        </article>`).join('') || '<p class="service-menu-empty">Không tìm thấy món phù hợp.</p>';
+      menuGrid.querySelectorAll('[data-service-add]').forEach(button => {
+        button.onclick = () => {
+          cart[button.dataset.serviceAdd] = (cart[button.dataset.serviceAdd] || 0) + 1;
+          renderCart();
+        };
+      });
+    };
+    const renderCart = () => {
+      const items = Object.entries(cart);
+      cartRows.innerHTML = items.length ? items.map(([id, quantity]) => {
+        const dish = dishes.find(item => item.id === Number(id));
+        return `<div class="service-cart-row"><div><strong>${escapeHtml(dish.name)}</strong><small>${money(dish.price)} · SL ${quantity}</small></div><div class="service-cart-controls"><button type="button" data-service-dec="${id}" aria-label="Giảm số lượng">−</button><button type="button" data-service-inc="${id}" aria-label="Tăng số lượng">+</button><button type="button" data-service-remove="${id}" aria-label="Xóa món">×</button></div></div>`;
+      }).join('') : '<p class="service-cart-empty">Chưa chọn món.</p>';
+      cartRows.querySelectorAll('[data-service-inc]').forEach(button => button.onclick = () => {
+        cart[button.dataset.serviceInc]++;
+        renderCart();
+      });
+      cartRows.querySelectorAll('[data-service-dec]').forEach(button => button.onclick = () => {
+        cart[button.dataset.serviceDec]--;
+        if (cart[button.dataset.serviceDec] < 1) delete cart[button.dataset.serviceDec];
+        renderCart();
+      });
+      cartRows.querySelectorAll('[data-service-remove]').forEach(button => button.onclick = () => {
+        delete cart[button.dataset.serviceRemove];
+        renderCart();
+      });
+    };
+    modal.querySelector('.service-menu-search').oninput = renderMenu;
+    modal.querySelector('.service-submit').onclick = async event => {
+      const button = event.currentTarget;
+      const items = Object.entries(cart).map(([menu_id, quantity]) => ({ menu_id, quantity }));
+      if (!items.length) {
+        toast('Hãy chọn ít nhất một món.');
+        return;
+      }
+      button.disabled = true;
+      try {
+        const result = await api('/api/orders', { method: 'POST', body: JSON.stringify({ table_id: tableId, items }) });
+        close();
+        toast(result.message);
+        renderPage();
+      } catch (error) {
+        button.disabled = false;
+        toast(error.message);
+      }
+    };
+    renderMenu();
+    renderCart();
+  } catch (error) {
+    toast(error.message);
+  }
 }
 async function openKitchenOrderModal(tableId) {
   try {
@@ -351,10 +570,53 @@ async function renderOverview() { const stats = await api('/api/dashboard'); con
 const tableGrid = (tables) => `<div class="table-grid">${tables.map(table => `<button class="table-tile ${table.status}" data-table-id="${table.id}" data-status="${table.status}">${table.name}<br><small>${({ free: 'Trống', reserved: 'Đã đặt', busy: 'Đang phục vụ', waiting: 'Chờ thanh toán' })[table.status]} · ${table.seats} chỗ</small></button>`).join('')}</div>`;
 async function renderTables() { const tables = await api('/api/tables'); $('#page').innerHTML = `<div class="toolbar"><input id="tableSearch" placeholder="Tìm bàn..."><select id="tableFilter"><option value="all">Tất cả trạng thái</option><option value="free">Trống</option><option value="reserved">Đã đặt</option><option value="busy">Đang phục vụ</option><option value="waiting">Chờ thanh toán</option></select></div><section class="panel">${tableGrid(tables)}</section>`; $('#tableSearch').oninput = loadFilteredTables; $('#tableFilter').onchange = loadFilteredTables; bindTableActions(); }
 async function loadFilteredTables() { const tables = await api(`/api/tables?search=${encodeURIComponent($('#tableSearch').value)}&status=${$('#tableFilter').value}`); $('.panel').innerHTML = tableGrid(tables); bindTableActions(); }
-function bindTableActions() { document.querySelectorAll('[data-table-id]').forEach((button) => button.onclick = () => { state.selectedTable = Number(button.dataset.tableId); if (button.dataset.status === 'free') { if (state.user?.role === 'manager') { state.page = 'reservations'; renderPage(); } else { toast('Chỉ quản lý mới có quyền đặt bàn.'); } } else if (button.dataset.status === 'busy') { if (state.user?.role === 'kitchen') { openKitchenOrderModal(button.dataset.tableId); } else { toast('Chỉ nhân viên bếp mới xác nhận món đã hoàn tất.'); } } else if (button.dataset.status === 'waiting') { if (['manager', 'server'].includes(state.user?.role)) { openPaymentInvoiceModal(button.dataset.tableId); } else { toast('Chỉ quản lý và nhân viên phục vụ mới được thanh toán cho bàn chờ thanh toán.'); } } else if (button.dataset.status === 'reserved') { if (state.user?.role === 'manager') askCancelReservation(button.dataset.tableId); else toast('Chỉ quản lý mới có quyền quản lý đặt bàn.'); } }); }
+function bindTableActions() { document.querySelectorAll('[data-table-id]').forEach((button) => button.onclick = () => { state.selectedTable = Number(button.dataset.tableId); if (button.dataset.status === 'free') { if (state.user?.role === 'manager') { state.page = 'reservations'; renderPage(); } else { toast('Chỉ quản lý mới có quyền đặt bàn.'); } } else if (button.dataset.status === 'busy') { if (state.user?.role === 'kitchen') { openKitchenOrderModal(button.dataset.tableId); } else { toast('Chỉ nhân viên bếp mới xác nhận món đã hoàn tất.'); } } else if (button.dataset.status === 'waiting') { if (['manager', 'server'].includes(state.user?.role)) { openPaymentInvoiceModal(button.dataset.tableId); } else { toast('Chỉ quản lý và nhân viên phục vụ mới được thanh toán cho bàn chờ thanh toán.'); } } else if (button.dataset.status === 'reserved') { if (['manager', 'server'].includes(state.user?.role)) askCancelReservation(button.dataset.tableId); else toast('Chỉ quản lý và nhân viên phục vụ mới có quyền quản lý đặt bàn.'); } }); }
 async function updateTable(id, action, message) { try { await api(`/api/tables/${id}/${action}`, { method: 'POST' }); toast(message); renderPage(); } catch (error) { toast(error.message); } }
 async function renderMenu() { const dishes = await api('/api/menu'); $('#page').innerHTML = `<div class="toolbar"><input id="menuSearch" placeholder="Tìm món ăn..."><select id="menuCategory"><option value="all">Tất cả nhóm</option><option>Khai vị</option><option>Món chính</option><option>Đồ uống</option></select></div><div class="dish-grid" id="dishGrid"></div>`; const refresh = async () => { const result = await api(`/api/menu?search=${encodeURIComponent($('#menuSearch').value)}&category=${encodeURIComponent($('#menuCategory').value)}`); $('#dishGrid').innerHTML = result.map(dish => `<article class="dish ${dish.available ? '' : 'sold-out-dish'}"><img src="${dishImages[dish.name] || ''}" alt="${dish.name}"><div class="dish-body"><span class="dish-category">${dish.category}</span><h4>${dish.name}</h4><p>${dish.description}</p><b>${money(dish.price)}</b><button class="availability-toggle ${dish.available ? '' : 'sold-out'}" data-availability="${dish.id}" data-available="${dish.available}">${dish.available ? 'Đang bán' : 'Hết món'}</button></div></article>`).join(''); document.querySelectorAll('[data-availability]').forEach(button => button.onclick = async () => { try { const result = await api(`/api/menu/${button.dataset.availability}/availability`, { method: 'PATCH', body: JSON.stringify({ available: button.dataset.available !== 'true' }) }); toast(result.message); refresh(); } catch (error) { toast(error.message); } }); }; $('#menuSearch').oninput = refresh; $('#menuCategory').onchange = refresh; await refresh(); }
-async function renderReservations() { const tables = await api('/api/tables?status=free'); $('#page').innerHTML = `<section class="panel"><form id="reservationForm" class="form-grid"><label>Tên khách<input name="customer" required></label><label>Số điện thoại<input name="phone" required></label><label>Số khách<input name="guests" type="number" min="1" value="2" required></label><label>Ngày đến<input name="date" type="date" required></label><label>Giờ đến<input name="time" type="time" required></label><label>Bàn<select name="table_id" required>${tables.map(table => `<option value="${table.id}" data-seats="${table.seats}">${table.name} · ${table.seats} chỗ</option>`).join('')}</select></label><label style="grid-column:1/-1">Ghi chú<input name="note"></label><div class="form-actions" style="grid-column:1/-1"><button class="primary" type="submit">Xác nhận đặt bàn</button></div></form></section>`; if (state.selectedTable) $('#reservationForm select[name="table_id"]').value = String(state.selectedTable); bindPhoneValidation($('#reservationForm input[name="phone"]')); const guestsInput = $('#reservationForm input[name="guests"]'); const applyGuestSeatValidation = () => { const seats = Number($('#reservationForm select[name="table_id"] option:checked').dataset.seats || 0); const guestCount = Number(guestsInput.value || 0); const isInvalid = guestCount > seats; guestsInput.classList.toggle('invalid-field', isInvalid); if (isInvalid) { guestsInput.setCustomValidity(`Số khách không được lớn hơn số chỗ của bàn (${seats} chỗ).`); guestsInput.reportValidity(); } else { guestsInput.setCustomValidity(''); } }; $('#reservationForm select[name="table_id"]').onchange = applyGuestSeatValidation; guestsInput.oninput = applyGuestSeatValidation; $('#reservationForm').onsubmit = async (event) => { event.preventDefault(); const phoneInput = $('#reservationForm input[name="phone"]'); if (!validatePhoneField(phoneInput)) return; applyGuestSeatValidation(); if (guestsInput.validationMessage) { guestsInput.reportValidity(); return; } const data = Object.fromEntries(new FormData(event.target)); data.phone = phoneInput.value; try { const result = await api('/api/reservations', { method: 'POST', body: JSON.stringify(data) }); toast(result.message); state.selectedTable = null; state.page = 'tables'; renderPage(); } catch (error) { toast(error.message); } }; applyGuestSeatValidation(); }
+function bindReservationForm(form, onSubmit) {
+  const phoneInput = form.elements.phone;
+  const guestsInput = form.elements.guests;
+  const tableSelect = form.elements.table_id;
+  bindPhoneValidation(phoneInput);
+  const applyGuestSeatValidation = () => {
+    const seats = Number(tableSelect.selectedOptions[0]?.dataset.seats || 0);
+    const isInvalid = Number(guestsInput.value || 0) > seats;
+    guestsInput.classList.toggle('invalid-field', isInvalid);
+    guestsInput.setCustomValidity(isInvalid ? `Số khách không được lớn hơn số chỗ của bàn (${seats} chỗ).` : '');
+  };
+  tableSelect.onchange = applyGuestSeatValidation;
+  guestsInput.oninput = applyGuestSeatValidation;
+  form.onsubmit = async event => {
+    event.preventDefault();
+    if (!validatePhoneField(phoneInput)) return;
+    applyGuestSeatValidation();
+    if (guestsInput.validationMessage) {
+      guestsInput.reportValidity();
+      return;
+    }
+    const data = Object.fromEntries(new FormData(form));
+    data.phone = phoneInput.value;
+    try {
+      await onSubmit(data);
+    } catch (error) {
+      toast(error.message);
+    }
+  };
+  applyGuestSeatValidation();
+}
+async function renderReservations() {
+  const tables = await api('/api/tables?status=free');
+  $('#page').innerHTML = `<section class="panel"><form id="reservationForm" class="form-grid"><label>Tên khách<input name="customer" required></label><label>Số điện thoại<input name="phone" required></label><label>Số khách<input name="guests" type="number" min="1" value="2" required></label><label>Ngày đến<input name="date" type="date" required></label><label>Giờ đến<input name="time" type="time" required></label><label>Bàn<select name="table_id" required>${tables.map(table => `<option value="${table.id}" data-seats="${table.seats}">${table.name} · ${table.seats} chỗ</option>`).join('')}</select></label><label style="grid-column:1/-1">Ghi chú<input name="note"></label><div class="form-actions" style="grid-column:1/-1"><button class="primary" type="submit">Xác nhận đặt bàn</button></div></form></section>`;
+  const form = $('#reservationForm');
+  if (state.selectedTable) form.elements.table_id.value = String(state.selectedTable);
+  bindReservationForm(form, async data => {
+    const result = await api('/api/reservations', { method: 'POST', body: JSON.stringify(data) });
+    toast(result.message);
+    state.selectedTable = null;
+    state.page = 'tables';
+    renderPage();
+  });
+}
 async function renderOrders() { const dishes = (await api('/api/menu')).filter(dish => dish.available); const tables = await api('/api/tables?status=free'); $('#page').innerHTML = `<div class="order-layout"><section class="panel order-menu-panel"><div class="order-toolbar"><input placeholder="Tìm món để thêm..."></div><div class="dish-grid">${dishes.map(dish => `<article class="dish"><img src="${dishImages[dish.name] || ''}" alt="${dish.name}"><div class="dish-body"><h4>${dish.name}</h4><b>${money(dish.price)}</b><button data-order-add="${dish.id}">+<span>Thêm</span></button></div></article>`).join('')}</div></section><aside class="panel cart"><p class="eyebrow">ĐƠN MỚI</p><h3>Chọn bàn phục vụ</h3><label>Bàn<select id="orderTable">${tables.map(table => `<option value="${table.id}">${table.name} · ${table.seats} chỗ</option>`).join('')}</select></label><div id="cartRows"></div><button class="primary" id="submitOrder">Xác nhận đơn →</button></aside></div>`; if (state.selectedTable) $('#orderTable').value = state.selectedTable; document.querySelectorAll('[data-order-add]').forEach(button => button.onclick = () => { state.cart[button.dataset.orderAdd] = (state.cart[button.dataset.orderAdd] || 0) + 1; updateCart(dishes); }); $('#submitOrder').onclick = async () => { try { const result = await api('/api/orders', { method: 'POST', body: JSON.stringify({ table_id: $('#orderTable').value, items: Object.entries(state.cart).map(([menu_id, quantity]) => ({ menu_id, quantity })) }) }); toast(result.message); state.cart = {}; state.page = 'tables'; renderPage(); } catch (error) { toast(error.message); } }; updateCart(dishes); }
 function updateCart(dishes) { const items = Object.entries(state.cart); $('#cartRows').innerHTML = items.length ? items.map(([id, quantity]) => { const dish = dishes.find(item => item.id === Number(id)); return `<div class="cart-row"><span>${dish.name}</span><div class="cart-controls"><button type="button" data-cart-dec="${id}">−</button><b>${quantity}</b><button type="button" data-cart-inc="${id}">+</button><button type="button" class="cart-remove" data-cart-remove="${id}">×</button></div><strong>${money(dish.price * quantity)}</strong></div>`; }).join('') : '<p class="empty-cart">Đơn đang trống<br>Chọn món ở bên trái để bắt đầu.</p>'; document.querySelectorAll('[data-cart-inc]').forEach(button => button.onclick = () => { state.cart[button.dataset.cartInc]++; updateCart(dishes); }); document.querySelectorAll('[data-cart-dec]').forEach(button => button.onclick = () => { state.cart[button.dataset.cartDec]--; if (state.cart[button.dataset.cartDec] < 1) delete state.cart[button.dataset.cartDec]; updateCart(dishes); }); document.querySelectorAll('[data-cart-remove]').forEach(button => button.onclick = () => { delete state.cart[button.dataset.cartRemove]; updateCart(dishes); }); }
 async function renderReports() { const stats = await api('/api/dashboard'); $('#page').innerHTML = `<section class="panel"><p class="eyebrow">DOANH THU ĐÃ GHI NHẬN</p><h1>${money(stats.revenue)}</h1><p>${stats.orders} hóa đơn · Giá trị trung bình ${money(stats.average)}</p></section>`; }
